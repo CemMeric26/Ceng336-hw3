@@ -174,11 +174,19 @@ static void output_task(void){
     }
     else{ 
         // Send EMP message with current empty space count
-        char emp[8]; 
-        sprintf(emp,"$EMP%02u#", empty_spaces); 
-        for(char *p=emp;*p;p++) buf_push(*p,OUTBUF);
+        char emp_message[8];
+        sprintf(emp_message, "$EMP%02u#", empty_spaces); // Format the message with the current empty spaces count
+
+        disable_rxtx();
+        for (char *p = emp_message; *p; p++) {
+            buf_push(*p, OUTBUF); // Push each character of the message into the buffer
+        }
+        enable_rxtx();
     }    
-    if(!PIE1bits.TX1IE){ PIE1bits.TX1IE=1; TXREG1=buf_pop(OUTBUF);} /* kick TX */
+    if(!PIE1bits.TX1IE && !buf_isempty(OUTBUF)){ 
+        PIE1bits.TX1IE=1; 
+        TXREG1=buf_pop(OUTBUF);
+    } /* kick TX */
 }
 
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
