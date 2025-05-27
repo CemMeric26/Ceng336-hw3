@@ -67,6 +67,25 @@ static void packet_task(void){
 /* ------------------- Parking?lot data & helpers ------------------ */
 #define LEVELS 4
 #define SLOTS_PER 10
+#define TOTAL_SLOTS (LEVELS * SLOTS_PER)  // 40 total slots
+
+// Parking slot states
+typedef enum {
+    SLOT_EMPTY = 0,
+    SLOT_OCCUPIED = 1,
+    SLOT_RESERVED = 2
+} slot_state_t;
+
+// Parking slot structure
+typedef struct {
+    slot_state_t state;
+    char license_plate[4];  // 3 digits + null terminator
+} parking_slot_t;
+
+// Global parking lot state
+static parking_slot_t parking_lot[LEVELS][SLOTS_PER];
+static uint8_t empty_spaces = TOTAL_SLOTS;  // Initially all 40 spaces are empty
+
 static uint8_t is_running=0;
 static volatile uint8_t tick_100ms=0, tick_500ms=0;
 static volatile uint16_t adc_value=0;
@@ -76,12 +95,68 @@ static char pending_msg[16];
 static uint8_t pending_len=0;
 static void queue_msg(const char *s){ if(pending_len==0){ pending_len=strlen(s); memcpy(pending_msg,s,pending_len+1);} }
 
+// Helper functions for parking lot management
+static void init_parking_lot(void) {
+    for(uint8_t level = 0; level < LEVELS; level++) {
+        for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
+            parking_lot[level][slot].state = SLOT_EMPTY;
+            parking_lot[level][slot].license_plate[0] = '\0';
+        }
+    }
+    empty_spaces = TOTAL_SLOTS;
+}
+
+// Convert level index (0-3) to level character (A-D)
+static char level_to_char(uint8_t level) {
+    return 'A' + level;
+}
+
+// Convert level character (A-D) to level index (0-3)
+static uint8_t char_to_level(char level_char) {
+    return level_char - 'A';
+}
+
+// Find first available non-reserved slot
+static uint8_t find_available_slot(uint8_t *level, uint8_t *slot) {
+    for(uint8_t l = 0; l < LEVELS; l++) {
+        for(uint8_t s = 0; s < SLOTS_PER; s++) {
+            if(parking_lot[l][s].state == SLOT_EMPTY) {
+                *level = l;
+                *slot = s;
+                return 1;  // Found
+            }
+        }
+    }
+    return 0;  // No available slot
+}
+
+// Update empty spaces count
+static void update_empty_spaces(void) {
+    empty_spaces = 0;
+    for(uint8_t level = 0; level < LEVELS; level++) {
+        for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
+            if(parking_lot[level][slot].state == SLOT_EMPTY) {
+                empty_spaces++;
+            }
+        }
+    }
+}
+
 /* ------------------- Parking_task: parses commands --------------- */
 static void parking_task(void){
     if(!pkt_valid) return;
-    char cmd[PKT_MAX_SIZE+1]; memcpy(cmd,pkt_body,pkt_bodysize); cmd[pkt_bodysize]=0;
-    if(strcmp(cmd,"GO")==0){ is_running=1; }
-    else if(strcmp(cmd,"END")==0){ is_running=0; pending_len=0; }
+    char cmd[PKT_MAX_SIZE+1]; 
+    memcpy(cmd,pkt_body,pkt_bodysize); 
+    cmd[pkt_bodysize]=0;
+    
+    if(strcmp(cmd,"GO")==0){ 
+        is_running=1; 
+        init_parking_lot();  // Initialize parking lot state when starting
+    }
+    else if(strcmp(cmd,"END")==0){ 
+        is_running=0; 
+        pending_len=0; 
+    }
     else if(strncmp(cmd,"PRK",3)==0){ /* TODO */ }
     else if(strncmp(cmd,"EXT",3)==0){ /* TODO */ }
     else if(strncmp(cmd,"SUB",3)==0){ /* TODO */ }
@@ -89,13 +164,30 @@ static void parking_task(void){
 }
 
 /* ------------------- Output_task every 100?ms -------------------- */
-static uint8_t emp_counter=0;
 static void output_task(void){
+    // I THINK WE SHOULD CHECK HERE IS IT REALLY CORRECT??
     if(!tick_100ms || !is_running) return;      /* only once per slot */
     tick_100ms=0;
-    if(pending_len){ for(uint8_t i=0;i<pending_len;i++) buf_push(pending_msg[i],OUTBUF); pending_len=0; }
-    else{ char emp[8]; sprintf(emp,"$EMP%02u#",emp_counter++); for(char *p=emp;*p;p++) buf_push(*p,OUTBUF);}    
-    if(!PIE1bits.TX1IE){ PIE1bits.TX1IE=1; TXREG1=buf_pop(OUTBUF);} /* kick TX */
+    
+    if(pending_len){ 
+        for(uint8_t i=0;i<pending_len;i++) buf_push(pending_msg[i],OUTBUF); 
+        pending_len=0; 
+    }
+    else{ 
+        // Send EMP message with current empty space count
+        char emp_message[8];
+        sprintf(emp_message, "$EMP%02u#", empty_spaces); // Format the message with the current empty spaces count
+
+        disable_rxtx();
+        for (char *p = emp_message; *p; p++) {
+            buf_push(*p, OUTBUF); // Push each character of the message into the buffer
+        }
+        enable_rxtx();
+    }    
+    if(!PIE1bits.TX1IE && !buf_isempty(OUTBUF)){ 
+        PIE1bits.TX1IE=1; 
+        TXREG1=buf_pop(OUTBUF);
+    } /* kick TX */
 }
 
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
@@ -114,6 +206,7 @@ void __interrupt(low_priority) isr_low(void){
 static void hw_init(void){
     /* Timer0 */ T0CON=0b00001000; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
+    TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
 }
