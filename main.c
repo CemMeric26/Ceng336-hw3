@@ -197,6 +197,7 @@ void __interrupt(low_priority) isr_low(void){
 static void hw_init(void){
     /* Timer0 */ T0CON=0b00001000; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
+    TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
 }
