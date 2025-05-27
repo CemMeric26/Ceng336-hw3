@@ -165,6 +165,7 @@ static void parking_task(void){
 
 /* ------------------- Output_task every 100?ms -------------------- */
 static void output_task(void){
+    // I THINK WE SHOULD CHECK HERE IS IT REALLY CORRECT??
     if(!tick_100ms || !is_running) return;      /* only once per slot */
     tick_100ms=0;
     
