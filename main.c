@@ -146,48 +146,75 @@ static void update_empty_spaces(void) {
 static void parking_task(void){
     if(!pkt_valid) return;
     char cmd[PKT_MAX_SIZE+1]; 
-    memcpy(cmd,pkt_body,pkt_bodysize); 
-    cmd[pkt_bodysize]=0;
+    memcpy(cmd, pkt_body, pkt_bodysize); 
+    cmd[pkt_bodysize] = 0;
     
-    if(strcmp(cmd,"GO")==0){ 
-        is_running=1; 
+    if(strcmp(cmd, "GO") == 0){ 
+        is_running = 1; 
         init_parking_lot();  // Initialize parking lot state when starting
     }
-    else if(strcmp(cmd,"END")==0){ 
-        is_running=0; 
-        pending_len=0; 
+    else if(strcmp(cmd, "END") == 0){ 
+        is_running = 0; 
+        pending_len = 0; 
     }
-    else if(strncmp(cmd,"PRK",3)==0){ /* TODO */ }
+    else if(strncmp(cmd, "PRK", 3) == 0){
+        // Extract license plate number
+        char license_plate[4];
+        strncpy(license_plate, cmd + 3, 3);
+        license_plate[3] = '\0';
+
+        uint8_t level, slot;
+        if(find_available_slot(&level, &slot)){
+            // Update parking lot state
+            parking_lot[level][slot].state = SLOT_OCCUPIED;
+            strcpy(parking_lot[level][slot].license_plate, license_plate);
+            update_empty_spaces();
+
+            // Send Parking Space Message
+            char parking_message[12];
+            sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+            queue_msg(parking_message);
+        }
+    }
     else if(strncmp(cmd,"EXT",3)==0){ /* TODO */ }
     else if(strncmp(cmd,"SUB",3)==0){ /* TODO */ }
-    pkt_valid=0;
+    pkt_valid = 0;
 }
 
 /* ------------------- Output_task every 100?ms -------------------- */
 static void output_task(void){
-    // I THINK WE SHOULD CHECK HERE IS IT REALLY CORRECT??
     if(!tick_100ms || !is_running) return;      /* only once per slot */
     tick_100ms=0;
     
+    
+
     if(pending_len){ 
-        for(uint8_t i=0;i<pending_len;i++) buf_push(pending_msg[i],OUTBUF); 
-        pending_len=0; 
-    }
-    else{ 
+        // Send pending message
+        disable_rxtx(); // Disable interrupts to safely access the buffer
+        for(uint8_t i=0; i<pending_len; i++) {
+            buf_push(pending_msg[i], OUTBUF);
+        }
+        enable_rxtx(); // Re-enable interrupts
+        pending_len = 0; 
+    } else { 
         // Send EMP message with current empty space count
         char emp_message[8];
         sprintf(emp_message, "$EMP%02u#", empty_spaces); // Format the message with the current empty spaces count
 
-        disable_rxtx();
+        disable_rxtx(); // Disable interrupts to safely access the buffer
         for (char *p = emp_message; *p; p++) {
             buf_push(*p, OUTBUF); // Push each character of the message into the buffer
         }
-        enable_rxtx();
+        enable_rxtx(); // Re-enable interrupts
     }    
+
+    // Enable transmission if there is data in the buffer
     if(!PIE1bits.TX1IE && !buf_isempty(OUTBUF)){ 
-        PIE1bits.TX1IE=1; 
-        TXREG1=buf_pop(OUTBUF);
-    } /* kick TX */
+        PIE1bits.TX1IE = 1; 
+        TXREG1 = buf_pop(OUTBUF);
+    }
+
+    
 }
 
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
