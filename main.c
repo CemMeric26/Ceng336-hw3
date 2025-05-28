@@ -29,8 +29,18 @@ static uint8_t buf_pop(buf_t b){ uint8_t v=(b==INBUF)?inbuf[tail[b]]:outbuf[tail
 
 /* ------------------- High?priority UART ISR ---------------------- */
 static void uart_isr(void){
-    if(PIR1bits.RC1IF){ buf_push(RCREG1,INBUF); PIR1bits.RC1IF=0; }
-    if(PIR1bits.TX1IF){ if(!buf_isempty(OUTBUF)) TXREG1=buf_pop(OUTBUF); else PIE1bits.TX1IE=0; PIR1bits.TX1IF=0; }
+    if(PIR1bits.RC1IF){ 
+        buf_push(RCREG1,INBUF); 
+        PIR1bits.RC1IF=0; 
+    }
+    if(PIR1bits.TX1IF){
+        if(!buf_isempty(OUTBUF)){
+            TXREG1=buf_pop(OUTBUF);
+            PIR1bits.TX1IF=0;
+        } else {
+            PIE1bits.TX1IE=0;
+            PIR1bits.TX1IF=0;
+        } }
 }
 void __interrupt(high_priority) isr_high(void){ uart_isr(); }
 
@@ -176,7 +186,38 @@ static void parking_task(void){
             queue_msg(parking_message);
         }
     }
-    else if(strncmp(cmd,"EXT",3)==0){ /* TODO */ }
+    else if(strncmp(cmd, "EXT", 3) == 0) {
+        // Extract license plate number
+        char license_plate[4];
+        strncpy(license_plate, cmd + 3, 3);
+        license_plate[3] = '\0';
+
+        // Find the car in the parking lot
+        uint8_t found = 0;
+        for(uint8_t level = 0; level < LEVELS; level++) {
+            for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
+                if(parking_lot[level][slot].state == SLOT_OCCUPIED &&
+                strcmp(parking_lot[level][slot].license_plate, license_plate) == 0) {
+                    // Calculate parking fee (example calculation)
+                    uint16_t fee = 100;
+                    
+                    // Update parking lot state
+                    parking_lot[level][slot].state = SLOT_EMPTY;
+                    parking_lot[level][slot].license_plate[0] = '\0';
+                    update_empty_spaces();
+
+                    // Send Parking Fee Message
+                    char fee_message[12];
+                    sprintf(fee_message, "$FEE%s%03u#", license_plate, fee);
+                    queue_msg(fee_message);
+
+                    found = 1;
+                    break;
+                }
+            }
+            if(found) break;
+        }
+    }
     else if(strncmp(cmd,"SUB",3)==0){ /* TODO */ }
     pkt_valid = 0;
 }
