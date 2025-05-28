@@ -21,11 +21,16 @@ static uint8_t inbuf[BUFSIZE], outbuf[BUFSIZE];
 static uint8_t head[2] = {0,0}, tail[2] = {0,0};
 typedef enum {INBUF = 0, OUTBUF = 1} buf_t;
 
+// Error handling functions
+void error_overflow()  { PORTB |= 0x01; /* Handle overflow error */ }
+void error_underflow() { PORTB |= 0x02; /* Handle underflow error */ }
+
 static inline void disable_rxtx(void){ PIE1bits.RC1IE = 0; PIE1bits.TX1IE = 0; }
 static inline void enable_rxtx (void){ PIE1bits.RC1IE = 1; PIE1bits.TX1IE = 1; }
 static uint8_t buf_isempty(buf_t b){ return head[b]==tail[b]; }
-static void buf_push(uint8_t v, buf_t b){ if(b==INBUF) inbuf[head[b]]=v; else outbuf[head[b]]=v; if(++head[b]==BUFSIZE) head[b]=0; }
-static uint8_t buf_pop(buf_t b){ uint8_t v=(b==INBUF)?inbuf[tail[b]]:outbuf[tail[b]]; if(++tail[b]==BUFSIZE) tail[b]=0; return v; }
+static void buf_push(uint8_t v, buf_t b){ if(b==INBUF) inbuf[head[b]]=v; else outbuf[head[b]]=v; if(++head[b]==BUFSIZE) head[b]=0; if (head[b] == tail[b]) { error_overflow(); } }
+static uint8_t buf_pop(buf_t b){ if (buf_isempty(b)) { error_underflow(); return 0; } else { uint8_t v=(b==INBUF)?inbuf[tail[b]]:outbuf[tail[b]]; if(++tail[b]==BUFSIZE) tail[b]=0; return v; } }
+
 
 /* ------------------- High?priority UART ISR ---------------------- */
 static void uart_isr(void){
@@ -279,9 +284,10 @@ static void parking_task(void){
             parking_lot[level][slot].state = SLOT_RESERVED;
             strcpy(parking_lot[level][slot].license_plate, license_plate);
             fee = 50;  // Subscription fee
+            add_reservation(license_plate, level, slot);
         }
         
-        add_reservation(license_plate, level, slot);
+        
 
         // Send Reserved Message
         char reserved_message[11];
@@ -341,6 +347,9 @@ void __interrupt(low_priority) isr_low(void){
 
 /* ------------------- Hardware init ------------------------------- */
 static void hw_init(void){
+    TRISB = 0x00; // Set all pins as output
+    LATB = 0x00; // Initialize PORTB to 0
+
     /* Timer0 */ T0CON=0b00001000; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
     TXSTA1bits.TXEN=1; // Enable transmitter
