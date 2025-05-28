@@ -13,7 +13,7 @@
 #include <string.h>
 
 #define _XTAL_FREQ   40000000UL
-#define TMR0_RELOAD  64554          /* 1?ms tick (1:8 prescale) */
+#define TMR0_RELOAD  64286  // Corrected reload value for 1ms tick with 1:8 prescaler
 
 /* ---------- UART ring?buffer (unchanged from serialio.c) ---------- */
 #define BUFSIZE 128
@@ -350,7 +350,7 @@ static void hw_init(void){
     TRISB = 0x00; // Set all pins as output
     LATB = 0x00; // Initialize PORTB to 0
 
-    /* Timer0 */ T0CON=0b00001000; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
+    /* Timer0 */ T0CON = 0b00000010; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
     TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
