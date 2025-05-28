@@ -186,7 +186,6 @@ static void output_task(void){
     if(!tick_100ms || !is_running) return;      /* only once per slot */
     tick_100ms=0;
     
-    
 
     if(pending_len){ 
         // Send pending message
@@ -195,17 +194,19 @@ static void output_task(void){
             buf_push(pending_msg[i], OUTBUF);
         }
         enable_rxtx(); // Re-enable interrupts
+
         pending_len = 0; 
     } else { 
         // Send EMP message with current empty space count
         char emp_message[8];
         sprintf(emp_message, "$EMP%02u#", empty_spaces); // Format the message with the current empty spaces count
-
+        
         disable_rxtx(); // Disable interrupts to safely access the buffer
         for (char *p = emp_message; *p; p++) {
             buf_push(*p, OUTBUF); // Push each character of the message into the buffer
         }
         enable_rxtx(); // Re-enable interrupts
+
     }    
 
     // Enable transmission if there is data in the buffer
@@ -214,7 +215,6 @@ static void output_task(void){
         TXREG1 = buf_pop(OUTBUF);
     }
 
-    
 }
 
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
