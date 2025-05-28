@@ -137,20 +137,44 @@ static uint8_t find_available_slot(uint8_t *level, uint8_t *slot) {
             }
         }
     }
+    
     return 0;  // No available slot
 }
 
-// Update empty spaces count
-static void update_empty_spaces(void) {
-    empty_spaces = 0;
-    for(uint8_t level = 0; level < LEVELS; level++) {
-        for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
-            if(parking_lot[level][slot].state == SLOT_EMPTY) {
-                empty_spaces++;
-            }
-        }
+/* ------------------- Reservation --------------- */
+
+typedef struct {
+    char license_plate[4];  // 3 digits + null terminator
+    uint8_t level;
+    uint8_t slot;
+} reserved_slot_t;
+
+#define MAX_RESERVATIONS 40  // Maximum number of reservations
+static reserved_slot_t reserved_slots[MAX_RESERVATIONS];
+static uint8_t reserved_count = 0;
+
+// Add a reservation
+static void add_reservation(const char *license_plate, uint8_t level, uint8_t slot) {
+    if (reserved_count < MAX_RESERVATIONS) {
+        strcpy(reserved_slots[reserved_count].license_plate, license_plate);
+        reserved_slots[reserved_count].level = level;
+        reserved_slots[reserved_count].slot = slot;
+        reserved_count++;
     }
 }
+
+// Find a reservation
+static int find_reservation(const char *license_plate, uint8_t *level, uint8_t *slot) {
+    for (uint8_t i = 0; i < reserved_count; i++) {
+        if (strcmp(reserved_slots[i].license_plate, license_plate) == 0) {
+            *level = reserved_slots[i].level;
+            *slot = reserved_slots[i].slot;
+            return 1;  // Found
+        }
+    }
+    return 0;  // Not found
+}
+
 
 /* ------------------- Parking_task: parses commands --------------- */
 static void parking_task(void){
@@ -167,24 +191,38 @@ static void parking_task(void){
         is_running = 0; 
         pending_len = 0; 
     }
-    else if(strncmp(cmd, "PRK", 3) == 0){
+    else if(strncmp(cmd, "PRK", 3) == 0) {
         // Extract license plate number
         char license_plate[4];
         strncpy(license_plate, cmd + 3, 3);
         license_plate[3] = '\0';
 
         uint8_t level, slot;
-        if(find_available_slot(&level, &slot)){
-            // Update parking lot state
+        level=0; slot=0;
+        if (find_reservation(license_plate, &level, &slot)) {
+            // Park the car in the reserved spot
             parking_lot[level][slot].state = SLOT_OCCUPIED;
             strcpy(parking_lot[level][slot].license_plate, license_plate);
-            update_empty_spaces();
-
+            
             // Send Parking Space Message
             char parking_message[12];
             sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
             queue_msg(parking_message);
+            empty_spaces--;  // Decrement empty spaces
+            
+        }else {
+            level=0; slot=0;
+            if (find_available_slot(&level, &slot)){
+                // Park the car in the first available spot if no reservation
+                parking_lot[level][slot].state = SLOT_OCCUPIED;
+                strcpy(parking_lot[level][slot].license_plate, license_plate);
+                char parking_message[12];
+                sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+                queue_msg(parking_message);
+                empty_spaces--;  // Decrement empty spaces
+            }
         }
+
     }
     else if(strncmp(cmd, "EXT", 3) == 0) {
         // Extract license plate number
@@ -197,14 +235,20 @@ static void parking_task(void){
         for(uint8_t level = 0; level < LEVELS; level++) {
             for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
                 if(parking_lot[level][slot].state == SLOT_OCCUPIED &&
-                strcmp(parking_lot[level][slot].license_plate, license_plate) == 0) {
+                   strcmp(parking_lot[level][slot].license_plate, license_plate) == 0) {
                     // Calculate parking fee (example calculation)
                     uint16_t fee = 100;
-                    
+
                     // Update parking lot state
                     parking_lot[level][slot].state = SLOT_EMPTY;
-                    parking_lot[level][slot].license_plate[0] = '\0';
-                    update_empty_spaces();
+                    empty_spaces++;  // Increment empty spaces
+
+                    // If it was reserved, keep it reserved
+                    if (find_reservation(license_plate, &level, &slot)) {
+                        parking_lot[level][slot].state = SLOT_RESERVED;
+                    } else {
+                        parking_lot[level][slot].license_plate[0] = '\0';
+                    }
 
                     // Send Parking Fee Message
                     char fee_message[12];
@@ -218,7 +262,32 @@ static void parking_task(void){
             if(found) break;
         }
     }
-    else if(strncmp(cmd,"SUB",3)==0){ /* TODO */ }
+    else if(strncmp(cmd, "SUB", 3) == 0) {
+        // Extract license plate number and parking space
+        char license_plate[4];
+        strncpy(license_plate, cmd + 3, 3);
+        license_plate[3] = '\0';
+
+        char level_char = cmd[6];
+        uint8_t level = char_to_level(level_char);
+        uint8_t slot = (cmd[7] - '0') * 10 + (cmd[8] - '0') - 1;  // Convert "01" to 0, "10" to 9
+
+        // Check if the slot is available
+        uint16_t fee = 0;
+        if(parking_lot[level][slot].state == SLOT_EMPTY) {
+            // Reserve the slot
+            parking_lot[level][slot].state = SLOT_RESERVED;
+            strcpy(parking_lot[level][slot].license_plate, license_plate);
+            fee = 50;  // Subscription fee
+        }
+        
+        add_reservation(license_plate, level, slot);
+
+        // Send Reserved Message
+        char reserved_message[11];
+        sprintf(reserved_message, "$RES%s%02u#", license_plate, fee);
+        queue_msg(reserved_message);
+    }
     pkt_valid = 0;
 }
 
