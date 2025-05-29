@@ -54,11 +54,10 @@ static void uart_isr(void){
 }
 void __interrupt(high_priority) isr_high(void){
     if (INTCONbits.RBIF) { // Check if PORTB change interrupt
-        if(PORTBbits.RB4 == 0){
+        if(PORTBbits.RB4 == 1){
             display_mode ^= 1; // Toggle display mode
         }
         INTCONbits.RBIF = 0; // Clear interrupt flag
-
     }
     uart_isr(); 
 
