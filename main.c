@@ -13,7 +13,7 @@
 #include <string.h>
 
 #define _XTAL_FREQ   40000000UL
-#define TMR0_RELOAD  64554          /* 1?ms tick (1:8 prescale) */
+#define TMR0_RELOAD  64286  // Corrected reload value for 1ms tick with 1:8 prescaler
 
 /* ---------- UART ring?buffer (unchanged from serialio.c) ---------- */
 #define BUFSIZE 128
@@ -21,16 +21,31 @@ static uint8_t inbuf[BUFSIZE], outbuf[BUFSIZE];
 static uint8_t head[2] = {0,0}, tail[2] = {0,0};
 typedef enum {INBUF = 0, OUTBUF = 1} buf_t;
 
+// Error handling functions
+void error_overflow()  { PORTB |= 0x01; /* Handle overflow error */ }
+void error_underflow() { PORTB |= 0x02; /* Handle underflow error */ }
+
 static inline void disable_rxtx(void){ PIE1bits.RC1IE = 0; PIE1bits.TX1IE = 0; }
 static inline void enable_rxtx (void){ PIE1bits.RC1IE = 1; PIE1bits.TX1IE = 1; }
 static uint8_t buf_isempty(buf_t b){ return head[b]==tail[b]; }
-static void buf_push(uint8_t v, buf_t b){ if(b==INBUF) inbuf[head[b]]=v; else outbuf[head[b]]=v; if(++head[b]==BUFSIZE) head[b]=0; }
-static uint8_t buf_pop(buf_t b){ uint8_t v=(b==INBUF)?inbuf[tail[b]]:outbuf[tail[b]]; if(++tail[b]==BUFSIZE) tail[b]=0; return v; }
+static void buf_push(uint8_t v, buf_t b){ if(b==INBUF) inbuf[head[b]]=v; else outbuf[head[b]]=v; if(++head[b]==BUFSIZE) head[b]=0; if (head[b] == tail[b]) { error_overflow(); } }
+static uint8_t buf_pop(buf_t b){ if (buf_isempty(b)) { error_underflow(); return 0; } else { uint8_t v=(b==INBUF)?inbuf[tail[b]]:outbuf[tail[b]]; if(++tail[b]==BUFSIZE) tail[b]=0; return v; } }
+
 
 /* ------------------- High?priority UART ISR ---------------------- */
 static void uart_isr(void){
-    if(PIR1bits.RC1IF){ buf_push(RCREG1,INBUF); PIR1bits.RC1IF=0; }
-    if(PIR1bits.TX1IF){ if(!buf_isempty(OUTBUF)) TXREG1=buf_pop(OUTBUF); else PIE1bits.TX1IE=0; PIR1bits.TX1IF=0; }
+    if(PIR1bits.RC1IF){ 
+        buf_push(RCREG1,INBUF); 
+        PIR1bits.RC1IF=0; 
+    }
+    if(PIR1bits.TX1IF){
+        if(!buf_isempty(OUTBUF)){
+            TXREG1=buf_pop(OUTBUF);
+            PIR1bits.TX1IF=0;
+        } else {
+            PIE1bits.TX1IE=0;
+            PIR1bits.TX1IF=0;
+        } }
 }
 void __interrupt(high_priority) isr_high(void){ uart_isr(); }
 
@@ -90,10 +105,20 @@ static uint8_t is_running=0;
 static volatile uint8_t tick_100ms=0, tick_500ms=0;
 static volatile uint16_t adc_value=0;
 
-/* simple one?slot outgoing message buffer */
-static char pending_msg[16];
-static uint8_t pending_len=0;
-static void queue_msg(const char *s){ if(pending_len==0){ pending_len=strlen(s); memcpy(pending_msg,s,pending_len+1);} }
+#define MAX_MESSAGES 10
+#define MAX_MESSAGE_LENGTH 16
+
+static char message_queue[MAX_MESSAGES][MAX_MESSAGE_LENGTH];
+static uint8_t message_queue_head = 0, message_queue_tail = 0;
+
+static void queue_msg(const char *s) {
+    uint8_t next_tail = (message_queue_tail + 1) % MAX_MESSAGES;
+    if (next_tail != message_queue_head) { // Check if the queue is not full
+        strncpy(message_queue[message_queue_tail], s, MAX_MESSAGE_LENGTH - 1);
+        message_queue[message_queue_tail][MAX_MESSAGE_LENGTH - 1] = '\0'; // Ensure null termination
+        message_queue_tail = next_tail;
+    }
+}
 
 // Helper functions for parking lot management
 static void init_parking_lot(void) {
@@ -127,16 +152,105 @@ static uint8_t find_available_slot(uint8_t *level, uint8_t *slot) {
             }
         }
     }
+    
     return 0;  // No available slot
 }
 
-// Update empty spaces count
-static void update_empty_spaces(void) {
-    empty_spaces = 0;
-    for(uint8_t level = 0; level < LEVELS; level++) {
-        for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
-            if(parking_lot[level][slot].state == SLOT_EMPTY) {
-                empty_spaces++;
+/* ------------------- Reservation --------------- */
+
+typedef struct {
+    char license_plate[4];  // 3 digits + null terminator
+    uint8_t level;
+    uint8_t slot;
+} reserved_slot_t;
+
+#define MAX_RESERVATIONS 40  // Maximum number of reservations
+static reserved_slot_t reserved_slots[MAX_RESERVATIONS];
+static uint8_t reserved_count = 0;
+
+// Add a reservation
+static void add_reservation(const char *license_plate, uint8_t level, uint8_t slot) {
+    if (reserved_count < MAX_RESERVATIONS) {
+        strcpy(reserved_slots[reserved_count].license_plate, license_plate);
+        reserved_slots[reserved_count].level = level;
+        reserved_slots[reserved_count].slot = slot;
+        reserved_count++;
+    }
+}
+
+// Find a reservation
+static int find_reservation(const char *license_plate, uint8_t *level, uint8_t *slot) {
+    for (uint8_t i = 0; i < reserved_count; i++) {
+        if (strcmp(reserved_slots[i].license_plate, license_plate) == 0) {
+            *level = reserved_slots[i].level;
+            *slot = reserved_slots[i].slot;
+            return 1;  // Found
+        }
+    }
+    return 0;  // Not found
+}
+
+// Define a simple queue for cars
+typedef struct {
+    char license_plate[4];
+} car_t;
+
+#define QUEUE_SIZE 16
+static car_t car_queue[QUEUE_SIZE];
+static uint8_t queue_head = 0, queue_tail = 0;
+
+// Enqueue a car
+static void enqueue_car(const char *license_plate) {
+    if ((queue_tail + 1) % QUEUE_SIZE != queue_head) { // Check if queue is not full
+        strcpy(car_queue[queue_tail].license_plate, license_plate);
+        queue_tail = (queue_tail + 1) % QUEUE_SIZE;
+    }
+}
+
+// Dequeue a car
+static int dequeue_car(char *license_plate) {
+    if (queue_head != queue_tail) { // Check if queue is not empty
+        strcpy(license_plate, car_queue[queue_head].license_plate);
+        queue_head = (queue_head + 1) % QUEUE_SIZE;
+        return 1; // Success
+    }
+    return 0; // Queue is empty
+}
+
+// Attempt to park a car from the queue
+static void try_park_from_queue(void) {
+    char license_plate[4];
+    if (dequeue_car(license_plate)) {
+        uint8_t level, slot;
+        level=0; slot=0;
+        if (find_reservation(license_plate, &level, &slot)) {
+            // this part is not that meaningful
+            // Park the car in the reserved spot
+            parking_lot[level][slot].state = SLOT_OCCUPIED;
+            strcpy(parking_lot[level][slot].license_plate, license_plate);
+            
+            // Send Parking Space Message
+            char parking_message[12];
+            sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+            queue_msg(parking_message);
+            empty_spaces--;  // Decrement empty spaces
+        } else {
+            level=0; slot=0;
+            if (find_available_slot(&level, &slot)) {
+                // Park the car in the first available spot
+                parking_lot[level][slot].state = SLOT_OCCUPIED;
+                strcpy(parking_lot[level][slot].license_plate, license_plate);
+                
+                char parking_message[12];
+                sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+                queue_msg(parking_message);
+                empty_spaces--;  // Decrement empty spaces
+                
+                //light for debug
+                // LATB= 0xFF;
+            } else {
+                // If no slot is available, re-enqueue the car
+                enqueue_car(license_plate);
             }
         }
     }
@@ -157,27 +271,110 @@ static void parking_task(void){
         is_running = 0; 
         pending_len = 0; 
     }
-    else if(strncmp(cmd, "PRK", 3) == 0){
+    else if(strncmp(cmd, "PRK", 3) == 0) {
         // Extract license plate number
         char license_plate[4];
         strncpy(license_plate, cmd + 3, 3);
         license_plate[3] = '\0';
 
         uint8_t level, slot;
-        if(find_available_slot(&level, &slot)){
-            // Update parking lot state
+        level=0; slot=0;
+        if (find_reservation(license_plate, &level, &slot)) {
+            // Park the car in the reserved spot
             parking_lot[level][slot].state = SLOT_OCCUPIED;
             strcpy(parking_lot[level][slot].license_plate, license_plate);
-            update_empty_spaces();
-
+            
             // Send Parking Space Message
             char parking_message[12];
             sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
             queue_msg(parking_message);
+            empty_spaces--;  // Decrement empty spaces
+            
+        }else {
+            level=0; slot=0;
+            if (find_available_slot(&level, &slot)){
+                // Park the car in the first available spot if no reservation
+                parking_lot[level][slot].state = SLOT_OCCUPIED;
+                strcpy(parking_lot[level][slot].license_plate, license_plate);
+                char parking_message[12];
+                sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+                queue_msg(parking_message);
+                empty_spaces--;  // Decrement empty spaces
+            } else {
+                // No available slot, enqueue the car
+                enqueue_car(license_plate);
+            }
         }
+
     }
-    else if(strncmp(cmd,"EXT",3)==0){ /* TODO */ }
-    else if(strncmp(cmd,"SUB",3)==0){ /* TODO */ }
+    else if(strncmp(cmd, "EXT", 3) == 0) {
+        // Extract license plate number
+        char license_plate[4];
+        strncpy(license_plate, cmd + 3, 3);
+        license_plate[3] = '\0';
+
+        // Find the car in the parking lot
+        uint8_t found = 0;
+        for(uint8_t level = 0; level < LEVELS; level++) {
+            for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
+                if(parking_lot[level][slot].state == SLOT_OCCUPIED &&
+                   strcmp(parking_lot[level][slot].license_plate, license_plate) == 0) {
+                    // Calculate parking fee (example calculation)
+                    uint16_t fee = 100;
+
+                    // Update parking lot state
+                    parking_lot[level][slot].state = SLOT_EMPTY;
+                    empty_spaces++;  // Increment empty spaces
+
+                    // If it was reserved, keep it reserved
+                    if (find_reservation(license_plate, &level, &slot)) {
+                        parking_lot[level][slot].state = SLOT_RESERVED;
+                        // empty spaces is not incremented
+                        empty_spaces--;
+                    } else {
+                        parking_lot[level][slot].license_plate[0] = '\0';
+                    }
+
+                    // Send Parking Fee Message
+                    char fee_message[12];
+                    sprintf(fee_message, "$FEE%s%03u#", license_plate, fee);
+                    queue_msg(fee_message);
+
+                    found = 1;
+                    break;
+                }
+            }
+            if(found) break;
+        }
+
+        // After processing, check the queue
+        try_park_from_queue();
+    }
+    else if(strncmp(cmd, "SUB", 3) == 0) {
+        // Extract license plate number and parking space
+        char license_plate[4];
+        strncpy(license_plate, cmd + 3, 3);
+        license_plate[3] = '\0';
+
+        char level_char = cmd[6];
+        uint8_t level = char_to_level(level_char);
+        uint8_t slot = (cmd[7] - '0') * 10 + (cmd[8] - '0') - 1;  // Convert "01" to 0, "10" to 9
+
+        // Check if the slot is available
+        uint16_t fee = 0;
+        if(parking_lot[level][slot].state == SLOT_EMPTY) {
+            // Reserve the slot
+            parking_lot[level][slot].state = SLOT_RESERVED;
+            strcpy(parking_lot[level][slot].license_plate, license_plate);
+            fee = 50;  // Subscription fee
+            add_reservation(license_plate, level, slot);
+        }
+        
+        // Send Reserved Message
+        char reserved_message[11];
+        sprintf(reserved_message, "$RES%s%02u#", license_plate, fee);
+        queue_msg(reserved_message);
+    }
     pkt_valid = 0;
 }
 
@@ -186,18 +383,18 @@ static void output_task(void){
     if(!tick_100ms || !is_running) return;      /* only once per slot */
     tick_100ms=0;
     
-
-    if(pending_len){ 
-        // Send pending message
+    if (message_queue_head != message_queue_tail) { // Check if there are messages in the queue
+        // Send the message at the head of the queue
         disable_rxtx(); // Disable interrupts to safely access the buffer
-        for(uint8_t i=0; i<pending_len; i++) {
-            buf_push(pending_msg[i], OUTBUF);
+        for (char *p = message_queue[message_queue_head]; *p; p++) {
+            buf_push(*p, OUTBUF);
         }
         enable_rxtx(); // Re-enable interrupts
 
-        pending_len = 0; 
-    } else { 
-        // Send EMP message with current empty space count
+        // Move to the next message
+        message_queue_head = (message_queue_head + 1) % MAX_MESSAGES;
+    } else {
+        // Send EMP message with current empty space count if no other message is pending
         char emp_message[8];
         sprintf(emp_message, "$EMP%02u#", empty_spaces); // Format the message with the current empty spaces count
         
@@ -206,15 +403,13 @@ static void output_task(void){
             buf_push(*p, OUTBUF); // Push each character of the message into the buffer
         }
         enable_rxtx(); // Re-enable interrupts
-
-    }    
+    }
 
     // Enable transmission if there is data in the buffer
     if(!PIE1bits.TX1IE && !buf_isempty(OUTBUF)){ 
         PIE1bits.TX1IE = 1; 
         TXREG1 = buf_pop(OUTBUF);
     }
-
 }
 
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
@@ -231,7 +426,10 @@ void __interrupt(low_priority) isr_low(void){
 
 /* ------------------- Hardware init ------------------------------- */
 static void hw_init(void){
-    /* Timer0 */ T0CON=0b00001000; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
+    TRISB = 0x00; // Set all pins as output
+    LATB = 0x00; // Initialize PORTB to 0
+
+    /* Timer0 */ T0CON = 0b00000010; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
     TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
