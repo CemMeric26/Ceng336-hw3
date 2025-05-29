@@ -86,6 +86,9 @@ static void packet_task(void){
 // Add global variable for total money
 uint32_t total_money = 0;
 
+// Add global variable for current time in milliseconds
+static volatile uint32_t now_ms = 0;
+
 // Parking slot states
 typedef enum {
     SLOT_EMPTY = 0,
@@ -275,7 +278,7 @@ static void parking_task(void){
     }
     else if(strcmp(cmd, "END") == 0){ 
         is_running = 0; 
-        pending_len = 0; 
+        // check what should we do here
     }
     else if(strncmp(cmd, "PRK", 3) == 0) {
         // Extract license plate number
@@ -426,6 +429,7 @@ void __interrupt(low_priority) isr_low(void){
     { 
         INTCONbits.TMR0IF=0; TMR0=TMR0_RELOAD;
         static uint8_t ms100=0, ms500=0;
+        now_ms++;  // Increment the millisecond counter
         if(++ms100==100){ ms100=0; tick_100ms=1;}
         if(++ms500==100){ if(ms500==5){ ms500=0; tick_500ms=1; } } /* keeps 500?ms flag */
     }
