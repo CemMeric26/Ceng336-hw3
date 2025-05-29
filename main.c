@@ -21,6 +21,11 @@ static uint8_t inbuf[BUFSIZE], outbuf[BUFSIZE];
 static uint8_t head[2] = {0,0}, tail[2] = {0,0};
 typedef enum {INBUF = 0, OUTBUF = 1} buf_t;
 
+
+static unsigned char digits[4];
+static uint8_t display_mode = 0; // 0 for total money, 1 for empty spaces
+
+
 // Error handling functions
 void error_overflow()  { PORTB |= 0x01; /* Handle overflow error */ }
 void error_underflow() { PORTB |= 0x02; /* Handle underflow error */ }
@@ -47,7 +52,17 @@ static void uart_isr(void){
             PIR1bits.TX1IF=0;
         } }
 }
-void __interrupt(high_priority) isr_high(void){ uart_isr(); }
+void __interrupt(high_priority) isr_high(void){
+    if (INTCONbits.RBIF) { // Check if PORTB change interrupt
+        if(PORTBbits.RB4 == 0){
+            display_mode ^= 1; // Toggle display mode
+        }
+        INTCONbits.RBIF = 0; // Clear interrupt flag
+
+    }
+    uart_isr(); 
+
+}
 
 /* ---------------- Packet framing task ($ ? #) -------------------- */
 #define PKT_HEADER '$'
@@ -406,28 +421,29 @@ void __interrupt(low_priority) isr_low(void){
         PIR1bits.ADIF=0; 
         adc_value=((uint16_t)ADRESH<<8)|ADRESL; 
     }
-
-    if (INTCONbits.RBIF) { // Check if PORTB change interrupt
-        if (PORTBbits.RB4 == 0) { // Check if RB4 is released (button press)
-            display_mode ^= 1; // Toggle display mode
-        }
-        INTCONbits.RBIF = 0; // Clear interrupt flag
-    }
 }
 
 /* ------------------- Hardware init ------------------------------- */
 static void hw_init(void){
     TRISB = 0x10; // Set RB4 as input, others as output
-    LATB = 0x00; // Initialize PORTB to 0
+    LATB = 0x00;
 
+    TRISH = 0x00;
+    TRISJ = 0x00;
+    LATH = 0x00;
+    LATJ = 0x00;
+    
     /* Timer0 */ T0CON = 0b00000010; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
+    INTCONbits.RBIE = 1; // Enable PORTB change interrupt
+    INTCONbits.RBIF = 0;
+
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
     TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
     // Enable PORTB change interrupt
-    INTCONbits.RBIE = 1; // Enable PORTB change interrupt
-    INTCONbits.RBIF = 0; // Clear PORTB change interrupt flag
+    
+    //TODO: PORTB on release ************* 
 
 }
 
@@ -444,9 +460,6 @@ const unsigned char segment_map[10] = {
     0b01111111, // 8
     0b01101111  // 9
 };
-
-static unsigned char digits[4];
-static uint8_t display_mode = 0; // 0 for total money, 1 for empty spaces
 
 // Update the 7-segment display
 void find_digits(unsigned int score) {
@@ -471,7 +484,7 @@ void update_display() {
     } else {
         // Placeholder for displaying empty spaces
         // This will be implemented with ADC value for level selection
-        find_digits(empty_spaces); // Example for total empty spaces
+        find_digits(9999); // Example for total empty spaces
     }
     display_digits();
 }
