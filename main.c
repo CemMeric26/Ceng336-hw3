@@ -242,6 +242,7 @@ static void try_park_from_queue(void) {
         dequeue_car();
         parking_lot[level][slot].state = SLOT_OCCUPIED;
         strcpy(parking_lot[level][slot].license_plate, license_plate);
+        parking_lot[level][slot].in_ms = now_ms;
                 
         char parking_message[12];
         sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
@@ -277,6 +278,7 @@ static void parking_task(void){
             parking_lot[level][slot].state = SLOT_OCCUPIED;                
             char parking_message[12];
             sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+            parking_lot[level][slot].in_ms = now_ms;
             queue_msg(parking_message);
             empty_spaces--;
         }
