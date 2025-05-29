@@ -402,12 +402,22 @@ void __interrupt(low_priority) isr_low(void){
         if(++ms100==100){ ms100=0; tick_100ms=1;}
         if(++ms500==100){ if(ms500==5){ ms500=0; tick_500ms=1; } } /* keeps 500?ms flag */
     }
-    if(PIR1bits.ADIF){ PIR1bits.ADIF=0; adc_value=((uint16_t)ADRESH<<8)|ADRESL; }
+    if(PIR1bits.ADIF){ 
+        PIR1bits.ADIF=0; 
+        adc_value=((uint16_t)ADRESH<<8)|ADRESL; 
+    }
+
+    if (INTCONbits.RBIF) { // Check if PORTB change interrupt
+        if (PORTBbits.RB4 == 0) { // Check if RB4 is released (button press)
+            display_mode ^= 1; // Toggle display mode
+        }
+        INTCONbits.RBIF = 0; // Clear interrupt flag
+    }
 }
 
 /* ------------------- Hardware init ------------------------------- */
 static void hw_init(void){
-    TRISB = 0x00; // Set all pins as output
+    TRISB = 0x10; // Set RB4 as input, others as output
     LATB = 0x00; // Initialize PORTB to 0
 
     /* Timer0 */ T0CON = 0b00000010; TMR0=TMR0_RELOAD; INTCON2bits.TMR0IP=0; INTCONbits.TMR0IE=1; T0CONbits.TMR0ON=1;
@@ -415,6 +425,55 @@ static void hw_init(void){
     TXSTA1bits.TXEN=1; // Enable transmitter
     /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
+    // Enable PORTB change interrupt
+    INTCONbits.RBIE = 1; // Enable PORTB change interrupt
+    INTCONbits.RBIF = 0; // Clear PORTB change interrupt flag
+
+}
+
+// Segment mapping for digits 0-9
+const unsigned char segment_map[10] = {
+    0b00111111, // 0
+    0b00000110, // 1
+    0b01011011, // 2
+    0b01001111, // 3
+    0b01100110, // 4
+    0b01101101, // 5
+    0b01111101, // 6
+    0b00000111, // 7
+    0b01111111, // 8
+    0b01101111  // 9
+};
+
+static unsigned char digits[4];
+static uint8_t display_mode = 0; // 0 for total money, 1 for empty spaces
+
+// Update the 7-segment display
+void find_digits(unsigned int score) {
+    digits[0] = score % 10; 
+    digits[1] = (score / 10) % 10; 
+    digits[2] = (score / 100) % 10;
+    digits[3] = (score / 1000) % 10; 
+}
+
+void display_digits(){
+    for (int i = 0; i < 4; i++) {
+        LATH = 0b00001000 >> i; // determine digit
+        LATJ = segment_map[digits[i]]; // Set the digit visual
+        __delay_us(500); // no flicker please
+    }
+}
+
+// Function to update the display based on the current mode
+void update_display() {
+    if (display_mode == 0) {
+        find_digits(total_money);
+    } else {
+        // Placeholder for displaying empty spaces
+        // This will be implemented with ADC value for level selection
+        find_digits(empty_spaces); // Example for total empty spaces
+    }
+    display_digits();
 }
 
 /* ------------------- MAIN ---------------------------------------- */
@@ -424,6 +483,7 @@ void main(void){
         packet_task();       /* Frame incoming stream */
         parking_task();      /* Process commands & queue messages */
         output_task();       /* Send exactly one every 100?ms */
+        update_display();    /* Update the 7-segment display */
         if(is_running && tick_500ms){ tick_500ms=0; ADCON0bits.GO=1; }
     }
 }
