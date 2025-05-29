@@ -82,7 +82,7 @@ static void packet_task(void){
 /* ------------------- Parking?lot data & helpers ------------------ */
 #define LEVELS 4
 #define SLOTS_PER 10
-#define TOTAL_SLOTS (LEVELS * SLOTS_PER)  // 40 total slots
+#define TOTAL_SLOTS 40 // 40 total slots
 // Add global variable for total money
 uint32_t total_money = 0;
 
@@ -106,13 +106,13 @@ typedef struct {
 
 // Global parking lot state
 static parking_slot_t parking_lot[LEVELS][SLOTS_PER];
-static uint8_t empty_spaces = TOTAL_SLOTS;  // Initially all 40 spaces are empty
+static uint16_t empty_spaces = TOTAL_SLOTS;  // Initially all 40 spaces are empty
 
 static uint8_t is_running=0;
 static volatile uint8_t tick_100ms=0, tick_500ms=0;
 static volatile uint16_t adc_value=0;
 
-#define MAX_MESSAGES 10
+#define MAX_MESSAGES 40
 #define MAX_MESSAGE_LENGTH 16
 
 static char message_queue[MAX_MESSAGES][MAX_MESSAGE_LENGTH];
@@ -150,8 +150,8 @@ static uint8_t char_to_level(char level_char) {
     return level_char - 'A';
 }
 
-// Find first available non-reserved slot
-static uint8_t find_available_slot(uint8_t *level, uint8_t *slot) {
+// Find first available slot
+static uint8_t find_empty_slot(uint8_t *level, uint8_t *slot) {
     for(uint8_t l = 0; l < LEVELS; l++) {
         for(uint8_t s = 0; s < SLOTS_PER; s++) {
             if(parking_lot[l][s].state == SLOT_EMPTY) {
@@ -165,6 +165,27 @@ static uint8_t find_available_slot(uint8_t *level, uint8_t *slot) {
     return 0;  // No available slot
 }
 
+// Find first available reserved slot
+static uint8_t find_reserved_slot(uint8_t *level, uint8_t *slot, char *license_plate) {
+    for(uint8_t l = 0; l < LEVELS; l++) {
+        for(uint8_t s = 0; s < SLOTS_PER; s++) {
+            if(parking_lot[l][s].state == SLOT_RESERVED && (strcmp(parking_lot[l][s].license_plate, license_plate) == 0)) {
+                *level = l;
+                *slot = s;
+                return 1;  // Found
+            }
+        }
+    }
+    
+    return 0;  // No available slot
+}
+
+// Find first available slot
+static uint8_t find_available_slot(uint8_t *level, uint8_t *slot, char *license_plate) {
+    return find_reserved_slot(&level, &slot, license_plate) || find_empty_slot(&level, &slot);  // No available slot
+}
+
+
 /* ------------------- Reservation --------------- */
 
 typedef struct {
@@ -172,32 +193,6 @@ typedef struct {
     uint8_t level;
     uint8_t slot;
 } reserved_slot_t;
-
-#define MAX_RESERVATIONS 40  // Maximum number of reservations
-static reserved_slot_t reserved_slots[MAX_RESERVATIONS];
-static uint8_t reserved_count = 0;
-
-// Add a reservation
-static void add_reservation(const char *license_plate, uint8_t level, uint8_t slot) {
-    if (reserved_count < MAX_RESERVATIONS) {
-        strcpy(reserved_slots[reserved_count].license_plate, license_plate);
-        reserved_slots[reserved_count].level = level;
-        reserved_slots[reserved_count].slot = slot;
-        reserved_count++;
-    }
-}
-
-// Find a reservation
-static int find_reservation(const char *license_plate, uint8_t *level, uint8_t *slot) {
-    for (uint8_t i = 0; i < reserved_count; i++) {
-        if (strcmp(reserved_slots[i].license_plate, license_plate) == 0) {
-            *level = reserved_slots[i].level;
-            *slot = reserved_slots[i].slot;
-            return 1;  // Found
-        }
-    }
-    return 0;  // Not found
-}
 
 // Define a simple queue for cars
 typedef struct {
@@ -207,20 +202,31 @@ typedef struct {
 #define QUEUE_SIZE 16
 static car_t car_queue[QUEUE_SIZE];
 static uint8_t queue_head = 0, queue_tail = 0;
+static uint8_t queue_count= 0;
 
 // Enqueue a car
 static void enqueue_car(const char *license_plate) {
-    if ((queue_tail + 1) % QUEUE_SIZE != queue_head) { // Check if queue is not full
+    if (queue_count < 16) { // Check if queue is not full
         strcpy(car_queue[queue_tail].license_plate, license_plate);
         queue_tail = (queue_tail + 1) % QUEUE_SIZE;
+        queue_count++;
     }
 }
 
 // Dequeue a car
-static int dequeue_car(char *license_plate) {
-    if (queue_head != queue_tail) { // Check if queue is not empty
-        strcpy(license_plate, car_queue[queue_head].license_plate);
+static int dequeue_car() {
+    if (queue_count != 0) { // Check if queue is not empty
         queue_head = (queue_head + 1) % QUEUE_SIZE;
+        queue_count--;
+        return 1; // Success
+    }
+    return 0; // Queue is empty
+}
+
+// Dequeue a car
+static int front_car(char *license_plate) {
+    if (queue_count != 0) { // Check if queue is not empty
+        strcpy(license_plate, car_queue[queue_head].license_plate);
         return 1; // Success
     }
     return 0; // Queue is empty
@@ -229,39 +235,18 @@ static int dequeue_car(char *license_plate) {
 // Attempt to park a car from the queue
 static void try_park_from_queue(void) {
     char license_plate[4];
-    if (dequeue_car(license_plate)) {
-        uint8_t level, slot;
-        level=0; slot=0;
-        if (find_reservation(license_plate, &level, &slot)) {
-            // this part is not that meaningful
-            // Park the car in the reserved spot
-            parking_lot[level][slot].state = SLOT_OCCUPIED;
-            strcpy(parking_lot[level][slot].license_plate, license_plate);
-            
-            // Send Parking Space Message
-            char parking_message[12];
-            sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
-            queue_msg(parking_message);
-            empty_spaces--;  // Decrement empty spaces
-        } else {
-            level=0; slot=0;
-            if (find_available_slot(&level, &slot)) {
-                // Park the car in the first available spot
-                parking_lot[level][slot].state = SLOT_OCCUPIED;
-                strcpy(parking_lot[level][slot].license_plate, license_plate);
+    uint8_t level, slot;
+    level=0; slot=0;
+    if (front_car(license_plate) && find_empty_slot(&level, &slot)) {
+        // Park the car in the first available spot
+        dequeue_car();
+        parking_lot[level][slot].state = SLOT_OCCUPIED;
+        strcpy(parking_lot[level][slot].license_plate, license_plate);
                 
-                char parking_message[12];
-                sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
-                queue_msg(parking_message);
-                empty_spaces--;  // Decrement empty spaces
-                
-                //light for debug
-                // LATB= 0xFF;
-            } else {
-                // If no slot is available, re-enqueue the car
-                enqueue_car(license_plate);
-            }
-        }
+        char parking_message[12];
+        sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
+        queue_msg(parking_message);
+        empty_spaces--;
     }
 }
 
@@ -285,34 +270,19 @@ static void parking_task(void){
         char license_plate[4];
         strncpy(license_plate, cmd + 3, 3);
         license_plate[3] = '\0';
-
         uint8_t level, slot;
         level=0; slot=0;
-        if (find_reservation(license_plate, &level, &slot)) {
+        if(find_reserved_slot(&level, &slot, license_plate)){
             // Park the car in the reserved spot
-            parking_lot[level][slot].state = SLOT_OCCUPIED;
-            strcpy(parking_lot[level][slot].license_plate, license_plate);
-            
-            // Send Parking Space Message
+            parking_lot[level][slot].state = SLOT_OCCUPIED;                
             char parking_message[12];
             sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
             queue_msg(parking_message);
-            empty_spaces--;  // Decrement empty spaces
-            
-        }else {
-            level=0; slot=0;
-            if (find_available_slot(&level, &slot)){
-                // Park the car in the first available spot if no reservation
-                parking_lot[level][slot].state = SLOT_OCCUPIED;
-                strcpy(parking_lot[level][slot].license_plate, license_plate);
-                char parking_message[12];
-                sprintf(parking_message, "$SPC%s%c%02u#", license_plate, level_to_char(level), slot + 1);
-                queue_msg(parking_message);
-                empty_spaces--;  // Decrement empty spaces
-            } else {
-                // No available slot, enqueue the car
-                enqueue_car(license_plate);
-            }
+            empty_spaces--;
+        }
+        else{
+            enqueue_car(license_plate);
+            try_park_from_queue();
         }
 
     }
@@ -331,17 +301,15 @@ static void parking_task(void){
 
                     // Calculate parking fee
                     uint32_t dt = now_ms - parking_lot[level][slot].in_ms;
-                    uint16_t fee = parking_lot[level][slot].subscribed ? 0 : (uint16_t)((dt + 249) / 250 + 1);
+                    uint16_t fee = parking_lot[level][slot].subscribed ? 0 : (uint16_t)((dt) / 250 + 1);
 
                     // Queue Parking Fee Message
                     char fee_message[12];
+                    total_money += fee;
                     sprintf(fee_message, "$FEE%s%03u#", license_plate, fee);
                     queue_msg(fee_message);
+                    empty_spaces++;
 
-                    // Update total money and slot state
-                    if (!parking_lot[level][slot].subscribed) {
-                        total_money += fee;
-                    }
 
                     if (parking_lot[level][slot].subscribed) {
                         parking_lot[level][slot].state = SLOT_RESERVED;
@@ -350,7 +318,6 @@ static void parking_task(void){
                         parking_lot[level][slot].state = SLOT_EMPTY;
                     }
 
-                    empty_spaces++;
                     found = 1;
                     break;
                 }
@@ -358,8 +325,7 @@ static void parking_task(void){
             if(found) break;
         }
 
-        // After processing, check the queue
-        try_park_from_queue();
+        if(queue_count>0) try_park_from_queue();
     }
     else if(strncmp(cmd, "SUB", 3) == 0) {
         // Extract license plate number and parking space
@@ -372,13 +338,14 @@ static void parking_task(void){
         uint8_t slot = (cmd[7] - '0') * 10 + (cmd[8] - '0') - 1;  // Convert "01" to 0, "10" to 9
 
         // Check if the slot is available
-        uint16_t fee = 0;
+        uint8_t fee = 0;
         if(parking_lot[level][slot].state == SLOT_EMPTY) {
             // Reserve the slot
             parking_lot[level][slot].state = SLOT_RESERVED;
             strcpy(parking_lot[level][slot].license_plate, license_plate);
-            fee = 50;  // Subscription fee
-            add_reservation(license_plate, level, slot);
+            parking_lot[level][slot].subscribed = 1;
+            fee = 50;
+            total_money += fee;  // Subscription fee
         }
         
         // Send Reserved Message
