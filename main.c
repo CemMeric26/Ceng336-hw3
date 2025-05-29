@@ -436,25 +436,7 @@ void __interrupt(low_priority) isr_low(void){
         if(++ms100==100){ ms100=0; tick_100ms=1;}
         if(++ms500==500){ ms500=0; tick_500ms=1; } /* keeps 500?ms flag */
     }
-    if(PIR1bits.ADIF){ 
-        PIR1bits.ADIF=0; 
-        adc_value=((uint16_t)ADRESH<<8)|ADRESL; // Read 10-bit ADC value
-
-        // Map ADC value to parking lot level
-        uint8_t level;
-        if (adc_value < 256) {
-            level = 0; // Level A
-        } else if (adc_value < 512) {
-            level = 1; // Level B
-        } else if (adc_value < 768) {
-            level = 2; // Level C
-        } else {
-            level = 3; // Level D
-        }
-
-        // Use the level for display or other logic
-        current_level = level;
-    }
+    
 }
 
 /* ------------------- Hardware init ------------------------------- */
@@ -473,11 +455,11 @@ static void hw_init(void){
 
     /* UART 115200 */ TXSTA1bits.SYNC=0; TXSTA1bits.BRGH=1; BAUDCON1bits.BRG16=0; SPBRG1=21; RCSTA1bits.CREN=1; RCSTA1bits.SPEN=1;
     TXSTA1bits.TXEN=1; // Enable transmitter
-    /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0b00110001; ADCON1=0x0E; ADCON2=0b10111110; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
+    /* ADC AN12 */ TRISHbits.TRISH4=1; ADCON0=0x31; ADCON1=0x00; ADCON2=0xAA; PIE1bits.ADIE=1; IPR1bits.ADIP=1;
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
     // Enable PORTB change interrupt
     
-    //TODO: PORTB on release *************
+    
 }
 
 // Segment mapping for digits 0-9
@@ -523,11 +505,29 @@ void main(void){
         packet_task();       /* Frame incoming stream */
         parking_task();      /* Process commands & queue messages */
         output_task();       /* Send exactly one every 100?ms */
+        
         if(is_running && tick_500ms){ 
             tick_500ms=0; 
-            ADCON0bits.GO=1; // Start ADC conversion every 500ms
-        }
-        update_display();    /* Update the 7-segment display */
+            ADCON0bits.GO=1; // Start ADC conversion
+            while(ADCON0bits.GO); // Poll and wait for conversion to finish
+            adc_value = (ADRESH << 8) + ADRESL; // Get the result
 
+            // Map ADC value to parking lot level
+            uint8_t level;
+            if (adc_value < 256) {
+                level = 0; // Level A
+            } else if (adc_value < 512) {
+                level = 1; // Level B
+            } else if (adc_value < 768) {
+                level = 2; // Level C
+            } else {
+                level = 3; // Level D
+            }
+
+            // Use the level for display or other logic
+            current_level = level;
+        }
+        
+        update_display();    /* Update the 7-segment display */
     }
 }
