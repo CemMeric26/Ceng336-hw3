@@ -25,7 +25,7 @@ typedef enum {INBUF = 0, OUTBUF = 1} buf_t;
 static unsigned char digits[4];
 static uint8_t display_mode = 0; // 0 for total money, 1 for empty spaces
 
-static uint8_t level_empty_space = 10;
+static uint8_t current_level = 0;
 
 
 // Error handling functions
@@ -453,7 +453,7 @@ void __interrupt(low_priority) isr_low(void){
         }
 
         // Use the level for display or other logic
-        level_empty_space = empty_spaces_per_level(level);
+        current_level = level;
     }
 }
 
@@ -509,7 +509,7 @@ void update_display() {
     if (display_mode == 0) {
         find_digits(total_money);
     } else {
-        find_digits(level_empty_space);
+        find_digits(empty_spaces_per_level(current_level));
     }
     display_digits();
 }
@@ -523,10 +523,11 @@ void main(void){
         packet_task();       /* Frame incoming stream */
         parking_task();      /* Process commands & queue messages */
         output_task();       /* Send exactly one every 100?ms */
-        update_display();    /* Update the 7-segment display */
         if(is_running && tick_500ms){ 
             tick_500ms=0; 
             ADCON0bits.GO=1; // Start ADC conversion every 500ms
         }
+        update_display();    /* Update the 7-segment display */
+
     }
 }
