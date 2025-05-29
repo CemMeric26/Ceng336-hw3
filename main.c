@@ -83,6 +83,8 @@ static void packet_task(void){
 #define LEVELS 4
 #define SLOTS_PER 10
 #define TOTAL_SLOTS (LEVELS * SLOTS_PER)  // 40 total slots
+// Add global variable for total money
+uint32_t total_money = 0;
 
 // Parking slot states
 typedef enum {
@@ -95,6 +97,8 @@ typedef enum {
 typedef struct {
     slot_state_t state;
     char license_plate[4];  // 3 digits + null terminator
+    uint32_t in_ms;
+    uint8_t subscribed;
 } parking_slot_t;
 
 // Global parking lot state
@@ -126,6 +130,8 @@ static void init_parking_lot(void) {
         for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
             parking_lot[level][slot].state = SLOT_EMPTY;
             parking_lot[level][slot].license_plate[0] = '\0';
+            parking_lot[level][slot].in_ms = 0;
+            parking_lot[level][slot].subscribed = 0;
         }
     }
     empty_spaces = TOTAL_SLOTS;
@@ -319,27 +325,29 @@ static void parking_task(void){
             for(uint8_t slot = 0; slot < SLOTS_PER; slot++) {
                 if(parking_lot[level][slot].state == SLOT_OCCUPIED &&
                    strcmp(parking_lot[level][slot].license_plate, license_plate) == 0) {
-                    // Calculate parking fee (example calculation)
-                    uint16_t fee = 100;
 
-                    // Update parking lot state
-                    parking_lot[level][slot].state = SLOT_EMPTY;
-                    empty_spaces++;  // Increment empty spaces
+                    // Calculate parking fee
+                    uint32_t dt = now_ms - parking_lot[level][slot].in_ms;
+                    uint16_t fee = parking_lot[level][slot].subscribed ? 0 : (uint16_t)((dt + 249) / 250 + 1);
 
-                    // If it was reserved, keep it reserved
-                    if (find_reservation(license_plate, &level, &slot)) {
-                        parking_lot[level][slot].state = SLOT_RESERVED;
-                        // empty spaces is not incremented
-                        empty_spaces--;
-                    } else {
-                        parking_lot[level][slot].license_plate[0] = '\0';
-                    }
-
-                    // Send Parking Fee Message
+                    // Queue Parking Fee Message
                     char fee_message[12];
                     sprintf(fee_message, "$FEE%s%03u#", license_plate, fee);
                     queue_msg(fee_message);
 
+                    // Update total money and slot state
+                    if (!parking_lot[level][slot].subscribed) {
+                        total_money += fee;
+                    }
+
+                    if (parking_lot[level][slot].subscribed) {
+                        parking_lot[level][slot].state = SLOT_RESERVED;
+                    } else {
+                        parking_lot[level][slot].license_plate[0] = '\0';
+                        parking_lot[level][slot].state = SLOT_EMPTY;
+                    }
+
+                    empty_spaces++;
                     found = 1;
                     break;
                 }
