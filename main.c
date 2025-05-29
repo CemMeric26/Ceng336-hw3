@@ -199,6 +199,16 @@ static uint8_t find_available_slot(uint8_t *level, uint8_t *slot, char *license_
     return find_reserved_slot(&level, &slot, license_plate) || find_empty_slot(&level, &slot);  // No available slot
 }
 
+// Helper function to calculate empty spaces per level
+static uint8_t empty_spaces_per_level(uint8_t level) {
+    uint8_t empty_count = 0;
+    for (uint8_t slot = 0; slot < SLOTS_PER; slot++) {
+        if (parking_lot[level][slot].state == SLOT_EMPTY) {
+            empty_count++;
+        }
+    }
+    return empty_count;
+}
 
 /* ------------------- Reservation --------------- */
 
@@ -414,11 +424,26 @@ void __interrupt(low_priority) isr_low(void){
         static uint8_t ms100=0, ms500=0;
         now_ms++;  // Increment the millisecond counter
         if(++ms100==100){ ms100=0; tick_100ms=1;}
-        if(++ms500==100){ if(ms500==5){ ms500=0; tick_500ms=1; } } /* keeps 500?ms flag */
+        if(++ms500==500){ ms500=0; tick_500ms=1; } /* keeps 500?ms flag */
     }
     if(PIR1bits.ADIF){ 
         PIR1bits.ADIF=0; 
-        adc_value=((uint16_t)ADRESH<<8)|ADRESL; 
+        adc_value=((uint16_t)ADRESH<<8)|ADRESL; // Read 10-bit ADC value
+
+        // Map ADC value to parking lot level
+        uint8_t level;
+        if (adc_value < 256) {
+            level = 0; // Level A
+        } else if (adc_value < 512) {
+            level = 1; // Level B
+        } else if (adc_value < 768) {
+            level = 2; // Level C
+        } else {
+            level = 3; // Level D
+        }
+
+        // Use the level for display or other logic
+        find_digits(empty_spaces_per_level[level]);
     }
 }
 
@@ -488,6 +513,8 @@ void update_display() {
     display_digits();
 }
 
+
+
 /* ------------------- MAIN ---------------------------------------- */
 void main(void){
     hw_init();
@@ -496,6 +523,9 @@ void main(void){
         parking_task();      /* Process commands & queue messages */
         output_task();       /* Send exactly one every 100?ms */
         update_display();    /* Update the 7-segment display */
-        if(is_running && tick_500ms){ tick_500ms=0; ADCON0bits.GO=1; }
+        if(is_running && tick_500ms){ 
+            tick_500ms=0; 
+            ADCON0bits.GO=1; // Start ADC conversion every 500ms
+        }
     }
 }
