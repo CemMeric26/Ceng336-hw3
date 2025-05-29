@@ -25,6 +25,8 @@ typedef enum {INBUF = 0, OUTBUF = 1} buf_t;
 static unsigned char digits[4];
 static uint8_t display_mode = 0; // 0 for total money, 1 for empty spaces
 
+static uint8_t level_empty_space = 10;
+
 
 // Error handling functions
 void error_overflow()  { PORTB |= 0x01; /* Handle overflow error */ }
@@ -416,6 +418,14 @@ static void output_task(void){
     }
 }
 
+// Update the 7-segment display
+void find_digits(unsigned int score) {
+    digits[0] = score % 10; 
+    digits[1] = (score / 10) % 10; 
+    digits[2] = (score / 100) % 10;
+    digits[3] = (score / 1000) % 10; 
+}
+
 /* ------------------- Low?priority ISR (Timer0+ADC) --------------- */
 void __interrupt(low_priority) isr_low(void){
     if(INTCONbits.TMR0IF)
@@ -443,7 +453,7 @@ void __interrupt(low_priority) isr_low(void){
         }
 
         // Use the level for display or other logic
-        find_digits(empty_spaces_per_level[level]);
+        level_empty_space = empty_spaces_per_level(level);
     }
 }
 
@@ -467,8 +477,7 @@ static void hw_init(void){
     enable_rxtx(); INTCONbits.PEIE=1; INTCONbits.GIE=1; RCONbits.IPEN=1;
     // Enable PORTB change interrupt
     
-    //TODO: PORTB on release ************* 
-
+    //TODO: PORTB on release *************
 }
 
 // Segment mapping for digits 0-9
@@ -485,13 +494,7 @@ const unsigned char segment_map[10] = {
     0b01101111  // 9
 };
 
-// Update the 7-segment display
-void find_digits(unsigned int score) {
-    digits[0] = score % 10; 
-    digits[1] = (score / 10) % 10; 
-    digits[2] = (score / 100) % 10;
-    digits[3] = (score / 1000) % 10; 
-}
+
 
 void display_digits(){
     for (int i = 0; i < 4; i++) {
@@ -506,9 +509,7 @@ void update_display() {
     if (display_mode == 0) {
         find_digits(total_money);
     } else {
-        // Placeholder for displaying empty spaces
-        // This will be implemented with ADC value for level selection
-        find_digits(9999); // Example for total empty spaces
+        find_digits(level_empty_space);
     }
     display_digits();
 }
